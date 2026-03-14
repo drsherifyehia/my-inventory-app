@@ -3,177 +3,257 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 
-st.set_page_config(page_title="Inventory Manager", layout="wide")
+st.set_page_config(page_title="Advanced Inventory Manager", layout="wide")
 
-# --- 1. Persistence & Date Setup ---
-if 'master_df' not in st.session_state:
-    st.session_state.master_df = pd.DataFrame()
-if 'amu_mapping' not in st.session_state:
-    st.session_state.amu_mapping = {}
-if 'price_mapping' not in st.session_state:
-    st.session_state.price_mapping = {}
+# --- 1. Memory Setup & Date Logic ---
+if 'tab1_data' not in st.session_state:
+    st.session_state.tab1_data = pd.DataFrame()
+if 'tab2_data' not in st.session_state:
+    st.session_state.tab2_data = pd.DataFrame()
 
 current_date = datetime.now()
-month_options = [(current_date + timedelta(days=30*i)).strftime('%B %Y') for i in range(12)]
+m1 = current_date.strftime('%B %Y')
+m2 = (current_date + timedelta(days=30)).strftime('%B %Y')
+m3 = (current_date + timedelta(days=60)).strftime('%B %Y')
+month_options = [m1, m2, m3]
 
-# --- 2. Smart Column Fixer ---
-def auto_fix_columns(df):
-    df.columns = [str(c).strip() for c in df.columns]
-    mapping = {
-        'Item name': ['item', 'name', 'product', 'description'],
-        'Item Type': ['type', 'category', 'group', 'item type'],
-        'Date created': ['date', 'created', 'time', 'timestamp'],
-        'Amount': ['amount', 'qty', 'quantity', 'distributed'],
-        'Branch amount': ['branch', 'store', 'branch amount'],
-        'Master amount': ['master', 'warehouse', 'main stock'],
-        'Item price': ['price', 'cost', 'rate', 'unit price'],
-        'Order_Month': ['month', 'order month', 'purchase month']
+# --- 2. Smart Column Fixers ---
+def fix_tab1_columns(df):
+    df.columns = [str(c).strip().lower() for c in df.columns]
+    col_map = {
+        'amount': ['amount', 'qty', 'quantity', 'distributed'],
+        'price': ['price', 'cost', 'unit price'],
+        'inventoryitem': ['inventoryitem', 'item', 'name', 'product'],
+        'inventorytype': ['inventorytype', 'category', 'group'],
+        'created': ['created', 'date', 'timestamp', 'time']
     }
     new_cols = {}
-    for standard, variations in mapping.items():
+    for standard, variations in col_map.items():
         for col in df.columns:
             if any(v in col.lower() for v in variations) and standard not in new_cols.values():
                 new_cols[col] = standard
-    return df.rename(columns=new_cols)
+    df = df.rename(columns=new_cols)
+    for req in ['inventoryitem', 'inventorytype', 'amount', 'price', 'created']:
+        if req not in df.columns:
+            df[req] = np.nan
+    return df
 
-st.title("📦 Inventory & Monthly Shopping")
+def fix_tab2_columns(df):
+    df.columns = [str(c).strip().lower() for c in df.columns]
+    col_map = {
+        'name': ['name', 'item', 'product', 'description'],
+        'type': ['type', 'inventoryitem', 'category'], 
+        'branchamount': ['branchamount', 'branch', 'clinic'],
+        'masteramount': ['masteramount', 'master', 'warehouse'],
+        'created': ['created', 'date', 'timestamp']
+    }
+    new_cols = {}
+    for standard, variations in col_map.items():
+        for col in df.columns:
+            if any(v in col.lower() for v in variations) and standard not in new_cols.values():
+                new_cols[col] = standard
+    df = df.rename(columns=new_cols)
+    for req in ['name', 'type', 'branchamount', 'masteramount', 'created']:
+        if req not in df.columns:
+            df[req] = np.nan
+    return df
 
-tab1, tab2, tab3 = st.tabs(["📊 Usage & Price Calc", "📦 Inventory Items", "🛒 Shopping List"])
+st.title("📦 Advanced Inventory Manager")
+
+tab1, tab2, tab3 = st.tabs(["📊 Usage Transactions", "📦 Current Inventory", "🛒 3-Month Shopping List"])
 
 # ==========================================
-# TAB 1: USAGE & PRICE CALCULATION
+# TAB 1: USAGE TRANSACTIONS & AMU
 # ==========================================
 with tab1:
-    st.header("1. Reference Data (Usage & Prices)")
+    st.header("1. Upload Usage & Calculate AMU")
+    f1_list = st.file_uploader("Upload Distribution Sheet(s)", type=['xlsx', 'csv'], accept_multiple_files=True, key="f1")
     
-    with st.expander("➕ Add Item Reference Manually"):
-        with st.form("manual_usage_form"):
-            m_name = st.text_input("Item Name")
-            m_price = st.number_input("Unit Price", min_value=0.0, step=0.01)
-            m_amu = st.number_input("Average Monthly Usage", min_value=0.0, step=0.1)
-            if st.form_submit_button("Save Reference"):
-                if m_name:
-                    st.session_state.amu_mapping[m_name] = m_amu
-                    st.session_state.price_mapping[m_name] = m_price
-                    st.rerun()
-
-    if st.session_state.amu_mapping or st.session_state.price_mapping:
-        st.write("### 📝 Manual Reference List")
+    if f1_list:
+        all_dfs = [fix_tab1_columns(pd.read_csv(f) if f.name.endswith('.csv') else pd.read_excel(f)) for f in f1_list]
+        raw_t1 = pd.concat(all_dfs, ignore_index=True)
+        raw_t1['created'] = pd.to_datetime(raw_t1['created'], errors='coerce')
+        raw_t1['amount'] = pd.to_numeric(raw_t1['amount'], errors='coerce').fillna(0)
+        raw_t1['price'] = pd.to_numeric(raw_t1['price'], errors='coerce').fillna(0)
         
-        # --- HEADER ROW ---
-        h1, h2, h3, h4 = st.columns([3, 2, 2, 1])
-        h1.markdown("**Item Name**")
-        h2.markdown("**Item Price**")
-        h3.markdown("**:blue[AMU (Calc)]**") # Highlighted title
-        h4.write("")
+        res = raw_t1.groupby('inventoryitem').agg({
+            'amount': 'sum', 'price': 'last', 'created': 'min', 'inventorytype': 'first'
+        }).reset_index()
+        
+        res['Months'] = ((current_date - res['created']).dt.days / 30.44).round(2)
+        res['Months'] = np.where(res['Months'] < 0.03, 0.03, res['Months']) 
+        res['AMU'] = (res['amount'] / res['Months']).round(2)
+        
+        res = res.rename(columns={'inventoryitem': 'InventoryItem', 'inventorytype': 'InventoryType', 'amount': 'Total Amount', 'price': 'Latest Price', 'created': 'Oldest Date'})
+        st.session_state.tab1_data = res
+        st.success("Usage Data Processed!")
 
-        all_ref_items = sorted(set(list(st.session_state.amu_mapping.keys()) + list(st.session_state.price_mapping.keys())))
-        for item in all_ref_items:
-            c1, c2, c3, c4 = st.columns([3, 2, 2, 1])
-            c1.write(item)
-            c2.write(f"${st.session_state.price_mapping.get(item, 0.0)}")
-            # --- HIGHLIGHTED CALCULATED COLUMN ---
-            amu_val = st.session_state.amu_mapping.get(item, 0.0)
-            c3.markdown(f'<div style="background-color: #e1f5fe; padding: 5px; border-radius: 5px;">{amu_val}</div>', unsafe_allow_html=True)
+    if not st.session_state.tab1_data.empty:
+        search_t1 = st.text_input("🔍 Search Usage Data...", key="search1").lower()
+        df1 = st.session_state.tab1_data.copy()
+        if search_t1:
+            df1 = df1[df1['InventoryItem'].astype(str).str.lower().str.contains(search_t1)]
             
-            if c4.button("🗑️", key=f"del_ref_{item}"):
-                st.session_state.amu_mapping.pop(item, None)
-                st.session_state.price_mapping.pop(item, None)
-                st.rerun()
-
-    st.divider()
-    f1 = st.file_uploader("Upload Distribution Sheet (Excel)", type=['xlsx'])
-    if f1:
-        df1 = auto_fix_columns(pd.read_excel(f1))
-        if 'Item name' in df1.columns:
-            if 'Date created' in df1.columns and 'Amount' in df1.columns:
-                df1['Date created'] = pd.to_datetime(df1['Date created'], errors='coerce')
-                res = df1.groupby('Item name').agg({'Amount':'sum', 'Date created':'min'}).reset_index()
-                days = (datetime.now() - res['Date created']).dt.days / 30.44
-                res['AMU'] = (res['Amount'] / np.maximum(1, days)).round(2)
-                st.session_state.amu_mapping.update(res.set_index('Item name')['AMU'].to_dict())
-            if 'Item price' in df1.columns:
-                price_df = df1.dropna(subset=['Item price']).drop_duplicates('Item name', keep='last')
-                st.session_state.price_mapping.update(price_df.set_index('Item name')['Item price'].to_dict())
-                st.success("Excel data imported!")
+        styled_df1 = df1.style.set_properties(subset=['Months', 'AMU'], **{'background-color': '#e1f5fe', 'color': 'black'})
+        st.dataframe(styled_df1, use_container_width=True)
 
 # ==========================================
-# TAB 2: INVENTORY ITEMS
+# TAB 2: MASTER INVENTORY
 # ==========================================
 with tab2:
-    st.header("2. Current Stock")
-    with st.expander("➕ Add New Stock Manually"):
-        with st.form("inv_form"):
-            n = st.text_input("Item Name")
-            t = st.text_input("Item Type")
-            b = st.number_input("Branch Qty", 0)
-            m = st.number_input("Master Qty", 0)
-            p = st.number_input("Price", value=float(st.session_state.price_mapping.get(n, 0.0)))
-            if st.form_submit_button("Add to List"):
-                row = pd.DataFrame([{'Item name': n, 'Item Type': t, 'Branch amount': b, 'Master amount': m, 
-                                     'Average monthly usage': st.session_state.amu_mapping.get(n, 0.0), 
-                                     'Item price': p, 'Order_Month': month_options[0]}])
-                st.session_state.master_df = pd.concat([st.session_state.master_df, row], ignore_index=True)
-                st.rerun()
-
-    f2 = st.file_uploader("Upload Inventory Sheet", type=['xlsx'])
-    if f2:
-        df2 = auto_fix_columns(pd.read_excel(f2))
-        df2['Average monthly usage'] = df2['Item name'].map(st.session_state.amu_mapping).fillna(0)
-        if 'Item price' not in df2.columns:
-            df2['Item price'] = df2['Item name'].map(st.session_state.price_mapping).fillna(0)
-        if 'Order_Month' not in df2.columns:
-            df2['Order_Month'] = month_options[0]
-        st.session_state.master_df = df2
-        st.success("Inventory Updated!")
+    st.header("2. Upload Master Inventory")
+    col2_1, col2_2 = st.columns([3, 1])
     
-    st.write("### 📋 Master Inventory List")
-    if not st.session_state.master_df.empty:
-        # --- HEADER ROW ---
-        h1, h2, h3, h4, h5, h6 = st.columns([3, 2, 2, 2, 2, 1])
-        h1.markdown("**Item (Type)**")
-        h2.markdown("**Branch**")
-        h3.markdown("**Master**")
-        h4.markdown("**:blue[AMU (Calc)]**")
-        h5.markdown("**:blue[Price]**")
-        h6.write("")
+    with col2_1:
+        f2_list = st.file_uploader("Upload Inventory Sheet(s)", type=['xlsx', 'csv'], accept_multiple_files=True, key="f2")
+    with col2_2:
+        # --- AI DATA LOGIC CHECK ---
+        st.write("")
+        st.write("")
+        if st.button("🤖 Run Logic & Validity Check", use_container_width=True):
+            st.write("### 🧠 Diagnostics Report")
+            if st.session_state.tab2_data.empty or st.session_state.tab1_data.empty:
+                st.warning("Please upload data to BOTH tabs before running the check.")
+            else:
+                errors_found = 0
+                missing_types = st.session_state.tab2_data[~st.session_state.tab2_data['Type'].isin(st.session_state.tab1_data['InventoryItem'])]
+                if not missing_types.empty:
+                    st.error(f"⚠️ Found {len(missing_types)} items in Tab 2 with Types not present in Tab 1 (highlighted in purple below).")
+                    errors_found += 1
+                
+                negative_stock = st.session_state.tab2_data[(st.session_state.tab2_data['Branch Amount'] < 0) | (st.session_state.tab2_data['Master Amount'] < 0)]
+                if not negative_stock.empty:
+                    st.error(f"⚠️ Found {len(negative_stock)} items with negative stock numbers. Please check your Excel.")
+                    errors_found += 1
+                    
+                if errors_found == 0:
+                    st.success("✅ Logic Check Passed! Data looks clean and well-linked.")
 
-        for i, row in st.session_state.master_df.iterrows():
-            c1, c2, c3, c4, c5, c6 = st.columns([3, 2, 2, 2, 2, 1])
-            c1.write(f"{row['Item name']} ({row['Item Type']})")
-            c2.write(str(row['Branch amount']))
-            c3.write(str(row['Master amount']))
+    if f2_list:
+        all_dfs2 = [fix_tab2_columns(pd.read_csv(f) if f.name.endswith('.csv') else pd.read_excel(f)) for f in f2_list]
+        raw_t2 = pd.concat(all_dfs2, ignore_index=True)
+        raw_t2['branchamount'] = pd.to_numeric(raw_t2['branchamount'], errors='coerce').fillna(0)
+        raw_t2['masteramount'] = pd.to_numeric(raw_t2['masteramount'], errors='coerce').fillna(0)
+        raw_t2['amount'] = raw_t2['branchamount'] + raw_t2['masteramount']
+        
+        raw_t2 = raw_t2.rename(columns={'name': 'Name', 'type': 'Type', 'amount': 'Total Amount', 'branchamount': 'Branch Amount', 'masteramount': 'Master Amount', 'created': 'Created Date'})
+        
+        if not st.session_state.tab1_data.empty:
+            amu_dict = st.session_state.tab1_data.set_index('InventoryItem')['AMU'].to_dict()
+            raw_t2['AMU (From Tab 1)'] = raw_t2['Type'].map(amu_dict).fillna(0)
+        else:
+            raw_t2['AMU (From Tab 1)'] = 0.0
+
+        if 'Order_Month' not in raw_t2.columns:
+            raw_t2['Order_Month'] = m1 # Default to current month
+
+        st.session_state.tab2_data = raw_t2
+        st.success("Inventory Processed!")
+
+    if not st.session_state.tab2_data.empty:
+        search_t2 = st.text_input("🔍 Search Inventory...", key="search2").lower()
+        df2 = st.session_state.tab2_data.copy()
+        
+        if search_t2:
+            df2 = df2[df2['Name'].astype(str).str.lower().str.contains(search_t2) | df2['Type'].astype(str).str.lower().str.contains(search_t2)]
             
-            # --- HIGHLIGHTED CALCULATED COLUMNS ---
-            c4.markdown(f'<div style="background-color: #e1f5fe; padding: 5px; border-radius: 5px;">{row["Average monthly usage"]}</div>', unsafe_allow_html=True)
-            c5.markdown(f'<div style="background-color: #e1f5fe; padding: 5px; border-radius: 5px;">${row["Item price"]}</div>', unsafe_allow_html=True)
+        # --- TAB 2 PURPLE HIGHLIGHT LOGIC ---
+        def tab2_styling(row):
+            styles = [''] * len(row)
+            tab1_items = st.session_state.tab1_data['InventoryItem'].values if not st.session_state.tab1_data.empty else []
+            is_missing = row['Type'] not in tab1_items
             
-            if c6.button("🗑️", key=f"del_inv_{i}"):
-                st.session_state.master_df = st.session_state.master_df.drop(i).reset_index(drop=True)
-                st.rerun()
-    else:
-        st.info("Inventory is empty.")
+            for i, col in enumerate(row.index):
+                if is_missing:
+                    styles[i] = 'background-color: #e6e6fa; color: black' # Soft Purple
+                elif col in ['Total Amount', 'AMU (From Tab 1)']:
+                    styles[i] = 'background-color: #e1f5fe; color: black' # Light Blue
+            return styles
+            
+        st.write("*(Items highlighted in purple are missing usage data in Tab 1)*")
+        st.dataframe(df2.style.apply(tab2_styling, axis=1), use_container_width=True)
 
 # ==========================================
-# TAB 3: SHOPPING LIST
+# TAB 3: SHOPPING LIST (3-MONTH VIEW & COLORS)
 # ==========================================
 with tab3:
-    st.header("3. Monthly Shopping List")
-    if not st.session_state.master_df.empty:
-        df = st.session_state.master_df.copy()
-        for col in ['Master amount', 'Item price', 'Average monthly usage']:
-            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+    st.header("3. Smart Shopping List (Next 3 Months)")
+    
+    if not st.session_state.tab2_data.empty and not st.session_state.tab1_data.empty:
+        df3 = st.session_state.tab2_data.copy()
         
-        search_q = st.text_input("🔍 Search items...", "").lower()
-        view_month = st.selectbox("📅 Select Month:", month_options)
-        
-        mask = (df['Master amount'] <= 0) & \
-               (df['Order_Month'] == view_month) & \
-               (df['Item name'].astype(str).str.lower().str.contains(search_q))
-        
-        shop_df = df[mask].copy()
+        # --- FILTERS ---
+        col_f1, col_f2 = st.columns([1, 2])
+        with col_f1:
+            search_t3 = st.text_input("🔍 Search Shopping List...", "").lower()
+        with col_f2:
+            all_types = sorted(df3['Type'].dropna().unique().astype(str))
+            selected_types = st.multiselect("🏷️ Filter by Type (InventoryItem)", options=all_types, default=all_types)
 
-        if not shop_df.empty:
-            shop_df['Cost'] = (shop_df['Average monthly usage'] * shop_df['Item price']).round(2)
-            st.dataframe(shop_df[['Item name', 'Item Type', 'Branch amount', 'Average monthly usage', 'Cost']], use_container_width=True)
-            st.metric(f"Total Estimate", f"${shop_df['Cost'].sum():,.2f}")
+        # Apply basic filters (MUST have Master = 0)
+        mask = (df3['Master Amount'] <= 0) & \
+               (df3['Type'].astype(str).isin(selected_types)) & \
+               (df3['Name'].astype(str).str.lower().str.contains(search_t3))
+        
+        shopping_pool = df3[mask].copy()
+        
+        # --- RESCHEDULING TOOL ---
+        st.write("### ⚙️ Assign Item to Month")
+        move_col1, move_col2, move_col3 = st.columns(3)
+        with move_col1:
+            move_item = st.selectbox("Select Item to Move", shopping_pool['Name'].unique() if not shopping_pool.empty else [])
+        with move_col2:
+            new_target = st.selectbox("Assign to Month:", month_options)
+        with move_col3:
+            st.write("")
+            if st.button("📅 Update Target Month"):
+                st.session_state.tab2_data.loc[st.session_state.tab2_data['Name'] == move_item, 'Order_Month'] = new_target
+                st.rerun()
+
+        st.divider()
+
+        # --- URGENCY COLOR LOGIC ---
+        def tab3_color_logic(row):
+            b = float(row['Branch Amount'])
+            amu = float(row['AMU (From Tab 1)'])
+            
+            if b <= 0:
+                return ['background-color: #ff4b4b; color: white'] * len(row) # RED (Empty everywhere)
+            elif b > 0 and b > amu:
+                return ['background-color: #f1c40f; color: black'] * len(row) # YELLOW (Safe for now)
+            elif b > 0 and b <= amu:
+                return ['background-color: #e67e22; color: white'] * len(row) # ORANGE (Getting low)
+            return [''] * len(row)
+
+        # --- 3 MONTH BOXES ---
+        st.write("### 📅 Upcoming Quarter Overview")
+        st.markdown("🔴 **Critical (Empty)** | 🟠 **Warning (Branch ≤ AMU)** | 🟡 **Safe (Branch > AMU)**")
+        
+        box1, box2, box3 = st.columns(3)
+        display_cols = ['Name', 'Type', 'Branch Amount', 'AMU (From Tab 1)']
+        
+        with box1:
+            st.subheader(f"🗓️ {m1}")
+            m1_df = shopping_pool[shopping_pool['Order_Month'] == m1]
+            if not m1_df.empty:
+                st.dataframe(m1_df[display_cols].style.apply(tab3_color_logic, axis=1), use_container_width=True)
+            else:
+                st.info("No items scheduled.")
+                
+        with box2:
+            st.subheader(f"🗓️ {m2}")
+            m2_df = shopping_pool[shopping_pool['Order_Month'] == m2]
+            if not m2_df.empty:
+                st.dataframe(m2_df[display_cols].style.apply(tab3_color_logic, axis=1), use_container_width=True)
+            else:
+                st.info("No items scheduled.")
+                
+        with box3:
+            st.subheader(f"🗓️ {m3}")
+            m3_df = shopping_pool[shopping_pool['Order_Month'] == m3]
+            if not m3_df.empty:
+                st.dataframe(m3_df[display_cols].style.apply(tab3_color_logic, axis=1), use_container_width=True)
+            else:
+                st.info("No items scheduled.")
+    else:
+        st.info("Upload data in Tab 1 and Tab 2 to generate the Shopping List.")

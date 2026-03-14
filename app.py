@@ -13,8 +13,9 @@ if 'amu_mapping' not in st.session_state:
 if 'price_mapping' not in st.session_state:
     st.session_state.price_mapping = {}
 
+# --- Updated to 12 Months ---
 current_date = datetime.now()
-month_options = [(current_date + timedelta(days=30*i)).strftime('%B %Y') for i in range(4)]
+month_options = [(current_date + timedelta(days=30*i)).strftime('%B %Y') for i in range(12)]
 
 # --- 2. Smart Column Fixer ---
 def auto_fix_columns(df):
@@ -56,11 +57,9 @@ with tab1:
                     st.session_state.price_mapping[m_name] = m_price
                     st.rerun()
 
-    # --- Manual List View in Tab 1 ---
     if st.session_state.amu_mapping or st.session_state.price_mapping:
         st.write("### 📝 Manual Reference List")
         all_items = sorted(set(list(st.session_state.amu_mapping.keys()) + list(st.session_state.price_mapping.keys())))
-        
         for item in all_items:
             c1, c2, c3, c4 = st.columns([3, 2, 2, 1])
             c1.markdown(f"**{item}**")
@@ -99,7 +98,6 @@ with tab2:
             b = st.number_input("Branch Qty", 0)
             m = st.number_input("Master Qty", 0)
             p = st.number_input("Price", value=float(st.session_state.price_mapping.get(n, 0.0)))
-            
             if st.form_submit_button("Add to List"):
                 row = pd.DataFrame([{'Item name': n, 'Item Type': t, 'Branch amount': b, 'Master amount': m, 
                                      'Average monthly usage': st.session_state.amu_mapping.get(n, 0.0), 
@@ -119,7 +117,6 @@ with tab2:
     
     st.write("### 📋 Master Inventory")
     if not st.session_state.master_df.empty:
-        # Fixed the display bug by using a loop that doesn't trigger help documentation
         for i, row in st.session_state.master_df.iterrows():
             c1, c2, c3, c4, c5 = st.columns([3, 2, 2, 2, 1])
             c1.markdown(f"**{row['Item name']}**")
@@ -129,11 +126,9 @@ with tab2:
             if c5.button("🗑️", key=f"del_inv_{i}"):
                 st.session_state.master_df = st.session_state.master_df.drop(i).reset_index(drop=True)
                 st.rerun()
-    else:
-        st.info("Inventory is empty.")
 
 # ==========================================
-# TAB 3: SHOPPING LIST
+# TAB 3: SHOPPING LIST (WITH SEARCH)
 # ==========================================
 with tab3:
     st.header("3. Monthly Shopping List")
@@ -142,13 +137,36 @@ with tab3:
         for col in ['Master amount', 'Item price', 'Average monthly usage']:
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
         
-        view_month = st.selectbox("📅 Month:", month_options)
-        mask = (df['Master amount'] <= 0) & (df['Order_Month'] == view_month)
+        # --- NEW SEARCH BOX ---
+        search_query = st.text_input("🔍 Search items in list...", "").lower()
+        
+        col_f1, col_f2 = st.columns([2, 1])
+        with col_f1:
+            view_month = st.selectbox("📅 Select Month:", month_options)
+        with col_f2:
+            all_types = sorted(df['Item Type'].unique().astype(str))
+            selected_types = st.multiselect("🏷️ Filter by Type", options=all_types, default=all_types)
+
+        # Apply Filters & Search
+        mask = (df['Master amount'] <= 0) & \
+               (df['Order_Month'] == view_month) & \
+               (df['Item Type'].astype(str).isin(selected_types)) & \
+               (df['Item name'].astype(str).str.lower().contains(search_query))
+        
         shop_df = df[mask].copy()
 
         if not shop_df.empty:
             shop_df['Cost'] = shop_df['Average monthly usage'] * shop_df['Item price']
             st.dataframe(shop_df[['Item name', 'Item Type', 'Branch amount', 'Average monthly usage', 'Cost']], use_container_width=True)
-            st.metric("Total Estimate", f"${shop_df['Cost'].sum():,.2f}")
+            st.metric(f"Total Estimate for {view_month}", f"${shop_df['Cost'].sum():,.2f}")
         else:
-            st.info("No items need ordering for this month.")
+            st.info(f"No items match your search or need ordering for {view_month}.")
+
+        st.divider()
+        st.write("### ⚙️ Reschedule / Move Item")
+        item_to_edit = st.selectbox("Select Item to Move", df['Item name'].unique())
+        new_m = st.selectbox("New Target Month:", month_options, key="move_tool")
+        if st.button("📅 Update Month"):
+            st.session_state.master_df.loc[st.session_state.master_df['Item name'] == item_to_edit, 'Order_Month'] = new_m
+            st.success(f"Moved {item_to_edit} to {new_m}")
+            st.rerun()

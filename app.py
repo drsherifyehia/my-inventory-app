@@ -56,15 +56,11 @@ with tab1:
                 res['AMU'] = (res['Amount'] / np.maximum(1, days)).round(2)
                 st.session_state.amu_mapping = res.set_index('Item name')['AMU'].to_dict()
             
-            # Extract Prices from Tab 1
+            # Extract Prices
             if 'Item price' in df1.columns:
-                # Get the most recent or first price found for each item
                 price_df = df1.dropna(subset=['Item price']).drop_duplicates('Item name', keep='last')
                 st.session_state.price_mapping = price_df.set_index('Item name')['Item price'].to_dict()
-                st.success("Prices extracted from Tab 1!")
-
-            st.write("### Data Preview from Tab 1")
-            st.dataframe(df1.head(), use_container_width=True)
+                st.success("Prices and Usage extracted from Tab 1!")
 
 # ==========================================
 # TAB 2: INVENTORY ITEMS
@@ -77,39 +73,30 @@ with tab2:
             t = st.text_input("Item Type")
             b = st.number_input("Branch Qty", 0)
             m = st.number_input("Master Qty", 0)
-            
-            # Check if we already have a price from Tab 1
             default_p = st.session_state.price_mapping.get(n, 0.0)
-            p = st.number_input("Price (Auto-filled if in Tab 1)", value=float(default_p))
-            
+            p = st.number_input("Price", value=float(default_p))
             test_amu = st.number_input("Average Monthly Usage", 0.0)
             target_m = st.selectbox("Assign to Purchase Month:", month_options)
             
             if st.form_submit_button("Save Item"):
                 final_amu = test_amu if test_amu > 0 else st.session_state.amu_mapping.get(n, 0.0)
-                # Ensure we use the latest price mapping if manually entered p is 0
-                final_price = p if p > 0 else st.session_state.price_mapping.get(n, 0.0)
-                
                 row = pd.DataFrame([{'Item name': n, 'Item Type': t, 'Branch amount': b, 'Master amount': m, 
-                                     'Average monthly usage': final_amu, 'Item price': final_price, 'Order_Month': target_m}])
+                                     'Average monthly usage': final_amu, 'Item price': p, 'Order_Month': target_m}])
                 st.session_state.master_df = pd.concat([st.session_state.master_df, row], ignore_index=True)
                 st.rerun()
 
     f2 = st.file_uploader("Upload Inventory Sheet", type=['xlsx'], key="f2")
     if f2:
         df2 = auto_fix_columns(pd.read_excel(f2))
-        # Logic to merge Price and AMU from Tab 1 into the new Inventory upload
+        # Logic to merge Price and AMU from Tab 1
         df2['Average monthly usage'] = df2['Item name'].map(st.session_state.amu_mapping).fillna(0)
-        
-        # Only fill prices from Tab 1 if the Inventory sheet doesn't have them
         if 'Item price' not in df2.columns or df2['Item price'].isnull().all():
             df2['Item price'] = df2['Item name'].map(st.session_state.price_mapping).fillna(0)
-            
         if 'Order_Month' not in df2.columns:
             df2['Order_Month'] = month_options[0]
             
         st.session_state.master_df = df2
-        st.success("Inventory Loaded with Tab 1 Prices!")
+        st.success("Inventory Loaded with Tab 1 Data!")
     
     st.write("### Master Inventory List")
     st.dataframe(st.session_state.master_df, use_container_width=True)
@@ -122,9 +109,11 @@ with tab3:
     if not st.session_state.master_df.empty:
         df = st.session_state.master_df.copy()
         
-        # Final price/usage cleanup
-        df['Item price'] = pd.to_numeric(df['Item price'], errors='coerce').fillna(0)
-        df['Average monthly usage'] = pd.to_numeric(df['Average monthly usage'], errors='coerce').fillna(0)
+        # SAFETY FIX: Ensure all numeric columns are actually numbers to prevent crashes
+        for col in ['Master amount', 'Branch amount', 'Item price', 'Average monthly usage']:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+        
         df['Monthly Cost'] = (df['Average monthly usage'] * df['Item price']).round(2)
         
         col_f1, col_f2 = st.columns([2, 1])
@@ -134,7 +123,8 @@ with tab3:
         with col_f2:
             view_month = st.selectbox("📅 View Shopping List For:", month_options)
 
-        mask = (pd.to_numeric(df['Master amount']) <= 0) & \
+        # Apply logic for out of stock items
+        mask = (df['Master amount'] <= 0) & \
                (df['Item Type'].astype(str).isin(selected_types)) & \
                (df['Order_Month'] == view_month)
         
@@ -151,4 +141,12 @@ with tab3:
             st.dataframe(shopping_df.style.apply(apply_status_color, axis=1), use_container_width=True)
             st.metric(f"Total for {view_month}", f"${shopping_df['Monthly Cost'].sum():,.2f}")
         else:
-            st.info(f"Everything is in stock for {view_month}.")
+            st.info(f"No items scheduled for {view_month}.")
+
+        st.divider()
+        st.write("### ⚙️ Move Item to Different Month")
+        item_to_edit = st.selectbox("Select Item", df['Item name'].unique())
+        new_m = st.selectbox("New Target Month:", month_options, key="move_tool")
+        if st.button("📅 Update Month"):
+            st.session_state.master_df.loc[st.session_state.master_df['Item name'] == item_to_edit, 'Order_Month'] = new_m
+            st.rerun()

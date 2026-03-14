@@ -14,7 +14,6 @@ if 'price_mapping' not in st.session_state:
     st.session_state.price_mapping = {}
 
 current_date = datetime.now()
-# 12 Months Selection
 month_options = [(current_date + timedelta(days=30*i)).strftime('%B %Y') for i in range(12)]
 
 # --- 2. Smart Column Fixer ---
@@ -60,19 +59,30 @@ with tab1:
 
     if st.session_state.amu_mapping or st.session_state.price_mapping:
         st.write("### 📝 Manual Reference List")
+        
+        # --- HEADER ROW ---
+        h1, h2, h3, h4 = st.columns([3, 2, 2, 1])
+        h1.markdown("**Item Name**")
+        h2.markdown("**Item Price**")
+        h3.markdown("**:blue[AMU (Calc)]**") # Highlighted title
+        h4.write("")
+
         all_ref_items = sorted(set(list(st.session_state.amu_mapping.keys()) + list(st.session_state.price_mapping.keys())))
         for item in all_ref_items:
             c1, c2, c3, c4 = st.columns([3, 2, 2, 1])
-            c1.markdown(f"**{item}**")
-            c2.write(f"Price: ${st.session_state.price_mapping.get(item, 0.0)}")
-            c3.write(f"AMU: {st.session_state.amu_mapping.get(item, 0.0)}")
+            c1.write(item)
+            c2.write(f"${st.session_state.price_mapping.get(item, 0.0)}")
+            # --- HIGHLIGHTED CALCULATED COLUMN ---
+            amu_val = st.session_state.amu_mapping.get(item, 0.0)
+            c3.markdown(f'<div style="background-color: #e1f5fe; padding: 5px; border-radius: 5px;">{amu_val}</div>', unsafe_allow_html=True)
+            
             if c4.button("🗑️", key=f"del_ref_{item}"):
                 st.session_state.amu_mapping.pop(item, None)
                 st.session_state.price_mapping.pop(item, None)
                 st.rerun()
 
     st.divider()
-    f1 = st.file_uploader("Upload Distribution Sheet (Excel)", type=['xlsx'], key="up_f1")
+    f1 = st.file_uploader("Upload Distribution Sheet (Excel)", type=['xlsx'])
     if f1:
         df1 = auto_fix_columns(pd.read_excel(f1))
         if 'Item name' in df1.columns:
@@ -106,7 +116,7 @@ with tab2:
                 st.session_state.master_df = pd.concat([st.session_state.master_df, row], ignore_index=True)
                 st.rerun()
 
-    f2 = st.file_uploader("Upload Inventory Sheet", type=['xlsx'], key="up_f2")
+    f2 = st.file_uploader("Upload Inventory Sheet", type=['xlsx'])
     if f2:
         df2 = auto_fix_columns(pd.read_excel(f2))
         df2['Average monthly usage'] = df2['Item name'].map(st.session_state.amu_mapping).fillna(0)
@@ -117,20 +127,35 @@ with tab2:
         st.session_state.master_df = df2
         st.success("Inventory Updated!")
     
-    st.write("### 📋 Master Inventory")
+    st.write("### 📋 Master Inventory List")
     if not st.session_state.master_df.empty:
+        # --- HEADER ROW ---
+        h1, h2, h3, h4, h5, h6 = st.columns([3, 2, 2, 2, 2, 1])
+        h1.markdown("**Item (Type)**")
+        h2.markdown("**Branch**")
+        h3.markdown("**Master**")
+        h4.markdown("**:blue[AMU (Calc)]**")
+        h5.markdown("**:blue[Price]**")
+        h6.write("")
+
         for i, row in st.session_state.master_df.iterrows():
-            c1, c2, c3, c4, c5 = st.columns([3, 2, 2, 2, 1])
-            c1.markdown(f"**{row['Item name']}** ({row['Item Type']})")
-            c2.write(f"Branch: {row['Branch amount']}")
-            c3.write(f"Master: {row['Master amount']}")
-            c4.write(f"${row['Item price']}")
-            if c5.button("🗑️", key=f"del_inv_{i}"):
+            c1, c2, c3, c4, c5, c6 = st.columns([3, 2, 2, 2, 2, 1])
+            c1.write(f"{row['Item name']} ({row['Item Type']})")
+            c2.write(str(row['Branch amount']))
+            c3.write(str(row['Master amount']))
+            
+            # --- HIGHLIGHTED CALCULATED COLUMNS ---
+            c4.markdown(f'<div style="background-color: #e1f5fe; padding: 5px; border-radius: 5px;">{row["Average monthly usage"]}</div>', unsafe_allow_html=True)
+            c5.markdown(f'<div style="background-color: #e1f5fe; padding: 5px; border-radius: 5px;">${row["Item price"]}</div>', unsafe_allow_html=True)
+            
+            if c6.button("🗑️", key=f"del_inv_{i}"):
                 st.session_state.master_df = st.session_state.master_df.drop(i).reset_index(drop=True)
                 st.rerun()
+    else:
+        st.info("Inventory is empty.")
 
 # ==========================================
-# TAB 3: SHOPPING LIST (FIXED SEARCH)
+# TAB 3: SHOPPING LIST
 # ==========================================
 with tab3:
     st.header("3. Monthly Shopping List")
@@ -139,20 +164,11 @@ with tab3:
         for col in ['Master amount', 'Item price', 'Average monthly usage']:
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
         
-        # --- FIXED SEARCH ---
         search_q = st.text_input("🔍 Search items...", "").lower()
+        view_month = st.selectbox("📅 Select Month:", month_options)
         
-        col_f1, col_f2 = st.columns([2, 1])
-        with col_f1:
-            view_month = st.selectbox("📅 Select Month:", month_options)
-        with col_f2:
-            all_types = sorted(df['Item Type'].unique().astype(str))
-            selected_types = st.multiselect("🏷️ Filter by Type", options=all_types, default=all_types)
-
-        # Updated Mask with fixed .str.contains
         mask = (df['Master amount'] <= 0) & \
                (df['Order_Month'] == view_month) & \
-               (df['Item Type'].astype(str).isin(selected_types)) & \
                (df['Item name'].astype(str).str.lower().str.contains(search_q))
         
         shop_df = df[mask].copy()
@@ -160,20 +176,4 @@ with tab3:
         if not shop_df.empty:
             shop_df['Cost'] = (shop_df['Average monthly usage'] * shop_df['Item price']).round(2)
             st.dataframe(shop_df[['Item name', 'Item Type', 'Branch amount', 'Average monthly usage', 'Cost']], use_container_width=True)
-            st.metric(f"Total Estimate for {view_month}", f"${shop_df['Cost'].sum():,.2f}")
-        else:
-            st.info("No items match your search or need ordering.")
-
-        st.divider()
-        st.write("### ⚙️ Move Item to Different Month")
-        move_item = st.selectbox("Select Item to Move", df['Item name'].unique())
-        new_target = st.selectbox("New Month:", month_options, key="move_btn")
-        if st.button("📅 Update Month"):
-            st.session_state.master_df.loc[st.session_state.master_df['Item name'] == move_item, 'Order_Month'] = new_target
-            st.rerun()
-
-        st.divider()
-        # --- DOWNLOAD FEATURE ---
-        st.write("### 💾 Export Full Inventory")
-        csv = st.session_state.master_df.to_csv(index=False).encode('utf-8')
-        st.download_button("📥 Download All Data (CSV)", data=csv, file_name="inventory_master.csv", mime="text/csv")
+            st.metric(f"Total Estimate", f"${shop_df['Cost'].sum():,.2f}")

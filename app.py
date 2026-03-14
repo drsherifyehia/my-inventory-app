@@ -2,11 +2,10 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
-import io
 
 st.set_page_config(page_title="Inventory Manager", layout="wide")
 
-# --- 1. Session State Initialization ---
+# --- 1. Memory Setup ---
 if 'master_df' not in st.session_state:
     st.session_state.master_df = pd.DataFrame()
 if 'amu_mapping' not in st.session_state:
@@ -46,7 +45,6 @@ tab1, tab2, tab3 = st.tabs(["📊 Usage & Price Calc", "📦 Inventory Items", "
 with tab1:
     st.header("1. Calculate Usage & Extract Prices")
     
-    # --- NEW MANUAL ADD BUTTON FOR TAB 1 ---
     with st.expander("➕ Add Usage/Price Manually"):
         with st.form("manual_usage_form"):
             m_name = st.text_input("Item Name")
@@ -56,11 +54,10 @@ with tab1:
                 if m_name:
                     st.session_state.amu_mapping[m_name] = m_amu
                     st.session_state.price_mapping[m_name] = m_price
-                    st.success(f"Saved: {m_name} at ${m_price} (Usage: {m_amu}/mo)")
+                    st.success(f"Saved: {m_name}")
                 else:
                     st.error("Please enter an Item Name")
 
-    st.divider()
     f1 = st.file_uploader("Upload Distribution Sheet (Excel)", type=['xlsx'], key="f1")
     if f1:
         df1 = auto_fix_columns(pd.read_excel(f1))
@@ -75,7 +72,7 @@ with tab1:
             if 'Item price' in df1.columns:
                 price_df = df1.dropna(subset=['Item price']).drop_duplicates('Item name', keep='last')
                 st.session_state.price_mapping.update(price_df.set_index('Item name')['Item price'].to_dict())
-                st.success("Data extracted and merged with Manual Entries!")
+                st.success("Data merged from Excel!")
 
 # ==========================================
 # TAB 2: INVENTORY ITEMS
@@ -85,20 +82,21 @@ with tab2:
     with st.expander("➕ Add Item to Inventory Manually"):
         with st.form("inv_form"):
             n = st.text_input("Item Name")
-            t = st.text_input("Item Type (e.g., Implants, Crown)")
+            t = st.text_input("Item Type")
             b = st.number_input("Branch Qty", 0)
             m = st.number_input("Master Qty", 0)
             
-            # Auto-pulls from Tab 1 (Manual or Uploaded)
+            # Auto-pulls price from Tab 1 reference data
             default_p = st.session_state.price_mapping.get(n, 0.0)
             p = st.number_input("Price", value=float(default_p))
             
-            target_m = st.selectbox("Assign to Purchase Month:", month_options)
+            # "Assign Month" REMOVED from here to simplify the UI
             
             if st.form_submit_button("Save to Inventory"):
                 final_amu = st.session_state.amu_mapping.get(n, 0.0)
+                # Defaulting to the current month automatically
                 row = pd.DataFrame([{'Item name': n, 'Item Type': t, 'Branch amount': b, 'Master amount': m, 
-                                     'Average monthly usage': final_amu, 'Item price': p, 'Order_Month': target_m}])
+                                     'Average monthly usage': final_amu, 'Item price': p, 'Order_Month': month_options[0]}])
                 st.session_state.master_df = pd.concat([st.session_state.master_df, row], ignore_index=True)
                 st.rerun()
 
@@ -124,7 +122,6 @@ with tab3:
     if not st.session_state.master_df.empty:
         df = st.session_state.master_df.copy()
         
-        # Cleanup data types
         for col in ['Master amount', 'Branch amount', 'Item price', 'Average monthly usage']:
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
         
@@ -154,10 +151,10 @@ with tab3:
             st.dataframe(shopping_df.style.apply(apply_status_color, axis=1), use_container_width=True)
             st.metric(f"Total for {view_month}", f"${shopping_df['Monthly Cost'].sum():,.2f}")
         else:
-            st.info(f"No items scheduled for {view_month}.")
+            st.info(f"Nothing to buy for {view_month}.")
 
         st.divider()
-        st.write("### ⚙️ Reschedule/Remove")
+        st.write("### ⚙️ Reschedule / Move Item")
         item_to_edit = st.selectbox("Select Item", df['Item name'].unique())
         new_m = st.selectbox("Move to Month:", month_options, key="move_tool")
         if st.button("📅 Update Month"):

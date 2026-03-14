@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 
 st.set_page_config(page_title="Inventory Manager", layout="wide")
 
-# --- 1. Persistence Setup ---
+# --- 1. Persistence & Date Setup ---
 if 'master_df' not in st.session_state:
     st.session_state.master_df = pd.DataFrame()
 if 'amu_mapping' not in st.session_state:
@@ -13,8 +13,8 @@ if 'amu_mapping' not in st.session_state:
 if 'price_mapping' not in st.session_state:
     st.session_state.price_mapping = {}
 
-# --- Updated to 12 Months ---
 current_date = datetime.now()
+# 12 Months Selection
 month_options = [(current_date + timedelta(days=30*i)).strftime('%B %Y') for i in range(12)]
 
 # --- 2. Smart Column Fixer ---
@@ -27,7 +27,8 @@ def auto_fix_columns(df):
         'Amount': ['amount', 'qty', 'quantity', 'distributed'],
         'Branch amount': ['branch', 'store', 'branch amount'],
         'Master amount': ['master', 'warehouse', 'main stock'],
-        'Item price': ['price', 'cost', 'rate', 'unit price']
+        'Item price': ['price', 'cost', 'rate', 'unit price'],
+        'Order_Month': ['month', 'order month', 'purchase month']
     }
     new_cols = {}
     for standard, variations in mapping.items():
@@ -59,8 +60,8 @@ with tab1:
 
     if st.session_state.amu_mapping or st.session_state.price_mapping:
         st.write("### 📝 Manual Reference List")
-        all_items = sorted(set(list(st.session_state.amu_mapping.keys()) + list(st.session_state.price_mapping.keys())))
-        for item in all_items:
+        all_ref_items = sorted(set(list(st.session_state.amu_mapping.keys()) + list(st.session_state.price_mapping.keys())))
+        for item in all_ref_items:
             c1, c2, c3, c4 = st.columns([3, 2, 2, 1])
             c1.markdown(f"**{item}**")
             c2.write(f"Price: ${st.session_state.price_mapping.get(item, 0.0)}")
@@ -71,7 +72,7 @@ with tab1:
                 st.rerun()
 
     st.divider()
-    f1 = st.file_uploader("Upload Distribution Sheet (Excel)", type=['xlsx'])
+    f1 = st.file_uploader("Upload Distribution Sheet (Excel)", type=['xlsx'], key="up_f1")
     if f1:
         df1 = auto_fix_columns(pd.read_excel(f1))
         if 'Item name' in df1.columns:
@@ -105,13 +106,14 @@ with tab2:
                 st.session_state.master_df = pd.concat([st.session_state.master_df, row], ignore_index=True)
                 st.rerun()
 
-    f2 = st.file_uploader("Upload Inventory Sheet", type=['xlsx'])
+    f2 = st.file_uploader("Upload Inventory Sheet", type=['xlsx'], key="up_f2")
     if f2:
         df2 = auto_fix_columns(pd.read_excel(f2))
         df2['Average monthly usage'] = df2['Item name'].map(st.session_state.amu_mapping).fillna(0)
         if 'Item price' not in df2.columns:
             df2['Item price'] = df2['Item name'].map(st.session_state.price_mapping).fillna(0)
-        df2['Order_Month'] = month_options[0]
+        if 'Order_Month' not in df2.columns:
+            df2['Order_Month'] = month_options[0]
         st.session_state.master_df = df2
         st.success("Inventory Updated!")
     
@@ -119,7 +121,7 @@ with tab2:
     if not st.session_state.master_df.empty:
         for i, row in st.session_state.master_df.iterrows():
             c1, c2, c3, c4, c5 = st.columns([3, 2, 2, 2, 1])
-            c1.markdown(f"**{row['Item name']}**")
+            c1.markdown(f"**{row['Item name']}** ({row['Item Type']})")
             c2.write(f"Branch: {row['Branch amount']}")
             c3.write(f"Master: {row['Master amount']}")
             c4.write(f"${row['Item price']}")
@@ -128,7 +130,7 @@ with tab2:
                 st.rerun()
 
 # ==========================================
-# TAB 3: SHOPPING LIST (WITH SEARCH)
+# TAB 3: SHOPPING LIST (FIXED SEARCH)
 # ==========================================
 with tab3:
     st.header("3. Monthly Shopping List")
@@ -137,8 +139,8 @@ with tab3:
         for col in ['Master amount', 'Item price', 'Average monthly usage']:
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
         
-        # --- NEW SEARCH BOX ---
-        search_query = st.text_input("🔍 Search items in list...", "").lower()
+        # --- FIXED SEARCH ---
+        search_q = st.text_input("🔍 Search items...", "").lower()
         
         col_f1, col_f2 = st.columns([2, 1])
         with col_f1:
@@ -147,26 +149,31 @@ with tab3:
             all_types = sorted(df['Item Type'].unique().astype(str))
             selected_types = st.multiselect("🏷️ Filter by Type", options=all_types, default=all_types)
 
-        # Apply Filters & Search
+        # Updated Mask with fixed .str.contains
         mask = (df['Master amount'] <= 0) & \
                (df['Order_Month'] == view_month) & \
                (df['Item Type'].astype(str).isin(selected_types)) & \
-               (df['Item name'].astype(str).str.lower().contains(search_query))
+               (df['Item name'].astype(str).str.lower().str.contains(search_q))
         
         shop_df = df[mask].copy()
 
         if not shop_df.empty:
-            shop_df['Cost'] = shop_df['Average monthly usage'] * shop_df['Item price']
+            shop_df['Cost'] = (shop_df['Average monthly usage'] * shop_df['Item price']).round(2)
             st.dataframe(shop_df[['Item name', 'Item Type', 'Branch amount', 'Average monthly usage', 'Cost']], use_container_width=True)
             st.metric(f"Total Estimate for {view_month}", f"${shop_df['Cost'].sum():,.2f}")
         else:
-            st.info(f"No items match your search or need ordering for {view_month}.")
+            st.info("No items match your search or need ordering.")
 
         st.divider()
-        st.write("### ⚙️ Reschedule / Move Item")
-        item_to_edit = st.selectbox("Select Item to Move", df['Item name'].unique())
-        new_m = st.selectbox("New Target Month:", month_options, key="move_tool")
+        st.write("### ⚙️ Move Item to Different Month")
+        move_item = st.selectbox("Select Item to Move", df['Item name'].unique())
+        new_target = st.selectbox("New Month:", month_options, key="move_btn")
         if st.button("📅 Update Month"):
-            st.session_state.master_df.loc[st.session_state.master_df['Item name'] == item_to_edit, 'Order_Month'] = new_m
-            st.success(f"Moved {item_to_edit} to {new_m}")
+            st.session_state.master_df.loc[st.session_state.master_df['Item name'] == move_item, 'Order_Month'] = new_target
             st.rerun()
+
+        st.divider()
+        # --- DOWNLOAD FEATURE ---
+        st.write("### 💾 Export Full Inventory")
+        csv = st.session_state.master_df.to_csv(index=False).encode('utf-8')
+        st.download_button("📥 Download All Data (CSV)", data=csv, file_name="inventory_master.csv", mime="text/csv")

@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
-import io
 
 st.set_page_config(page_title="Inventory Manager", layout="wide")
 
@@ -64,7 +63,7 @@ with tab2:
     with st.expander("➕ Add Item Manually"):
         with st.form("inv_form"):
             n = st.text_input("Item Name")
-            t = st.text_input("Item Type")
+            t = st.text_input("Item Type (e.g., Crown, Implants)")
             b = st.number_input("Branch Qty", 0)
             m = st.number_input("Master Qty", 0)
             p = st.number_input("Price", 0.0)
@@ -84,13 +83,15 @@ with tab2:
         df2['Average monthly usage'] = df2['Item name'].map(st.session_state.amu_mapping).fillna(0)
         if 'Order_Month' not in df2.columns:
             df2['Order_Month'] = month_options[0]
+        if 'Item Type' not in df2.columns:
+            df2['Item Type'] = "General"
         st.session_state.master_df = df2
         st.success("Inventory Loaded!")
     
     st.dataframe(st.session_state.master_df, use_container_width=True)
 
 # ==========================================
-# TAB 3: SHOPPING LIST (GROUPED & FILTERED)
+# TAB 3: SHOPPING LIST (FIXED MOBILE VIEW)
 # ==========================================
 with tab3:
     st.header("3. Monthly Shopping List")
@@ -99,19 +100,15 @@ with tab3:
         df = st.session_state.master_df.copy()
         df['Monthly Cost'] = (df['Average monthly usage'] * df['Item price']).round(2)
         
-        # --- TYPE FILTER (HORIZONTAL) ---
+        # --- HORIZONTAL TYPE FILTER (MOBILE FRIENDLY) ---
         st.write("### 🏷️ Filter by Type")
         all_types = sorted(df['Item Type'].unique().astype(str))
-        cols = st.columns(len(all_types) if len(all_types) > 0 else 1)
-        selected_types = []
-        for i, t in enumerate(all_types):
-            if cols[i % len(cols)].checkbox(t, value=True, key=f"chk_{t}"):
-                selected_types.append(t)
+        
+        # Using a Multiselect which is much better for long lists on mobile
+        selected_types = st.multiselect("Select Categories to Display", options=all_types, default=all_types)
         
         # --- APPLY FILTERS ---
-        # 1. Filter by Type
         df_filtered = df[df['Item Type'].astype(str).isin(selected_types)]
-        # 2. Filter by Stock (Master is 0)
         to_buy = df_filtered[df_filtered['Master amount'] <= 0].copy()
         
         if not to_buy.empty:
@@ -128,19 +125,19 @@ with tab3:
         # --- ACTIONS ---
         st.write("### ⚙️ Move / Edit Items")
         target = st.selectbox("Select Item", df['Item name'].unique())
-        c1, c2 = st.columns(2)
         
-        if c1.button("❌ Remove Item"):
+        col_act1, col_act2 = st.columns(2)
+        if col_act1.button("❌ Remove Item"):
             st.session_state.master_df = st.session_state.master_df[st.session_state.master_df['Item name'] != target]
             st.rerun()
         
         move_month = st.selectbox("Move to Month", month_options, key="move_m")
-        if c2.button("📅 Move Month"):
+        if col_act2.button("📅 Move Month"):
             st.session_state.master_df.loc[st.session_state.master_df['Item name'] == target, 'Order_Month'] = move_month
             st.success(f"Moved {target} to {move_month}")
             st.rerun()
             
         csv = df.to_csv(index=False).encode('utf-8')
-        st.download_button("📥 Download All", csv, "inventory.csv", "text/csv")
+        st.download_button("📥 Download All (CSV)", csv, "inventory.csv", "text/csv")
     else:
         st.info("Inventory is empty. Please add items in Tab 2.")
